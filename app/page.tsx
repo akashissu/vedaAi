@@ -17,14 +17,81 @@ interface ProcessingStatus {
 
 interface Results {
   questions: Array<{ id: string; number: string; text: string; marks?: number }>;
-  answers: Array<{ id: string; boundingBox: [number, number, number, number]; page: number; transcribedText?: string; questionNumber?: string }>;
+  answers: Array<{
+    id: string;
+    boundingBox: [number, number, number, number];
+    page: number;
+    transcribedText?: string;
+    questionNumber?: string;
+  }>;
   mappings: Array<{ questionId: string; answerId: string }>;
   answerSheetImages: string[];
 }
 
+async function processFilesWithStream(
+  questionPaper: File,
+  answerSheet: File,
+  onProgress: (status: ProcessingStatus) => void
+): Promise<Results> {
+  const formData = new FormData();
+  formData.append('questionPaper', questionPaper);
+  formData.append('answerSheet', answerSheet);
+
+  const response = await fetch('/api/process', {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || 'Processing failed');
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('No response stream');
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let results: Results | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+
+      const data = JSON.parse(line.slice(6));
+
+      if (data.stage === 'complete') {
+        results = {
+          questions: data.results?.questions ?? [],
+          answers: data.results?.answers ?? [],
+          mappings: data.results?.mappings ?? [],
+          answerSheetImages: data.results?.answerSheetImages ?? [],
+        };
+      } else if (data.stage === 'error') {
+        throw new Error(data.error || data.message || 'Processing failed');
+      } else {
+        onProgress({
+          stage: data.stage,
+          progress: data.progress ?? 0,
+          message: data.message ?? '',
+        });
+      }
+    }
+  }
+
+  if (!results) throw new Error('Processing finished without results');
+  return results;
+}
+
 export default function HomePage() {
   const [state, setState] = useState<AppState>('upload');
-  const [sessionId, setSessionId] = useState<string | null>(null);
   const [processingStatus, setProcessingStatus] = useState<ProcessingStatus>({
     stage: 'Initializing',
     progress: 0,
@@ -36,60 +103,23 @@ export default function HomePage() {
     setState('processing');
 
     try {
-      setProcessingStatus({ stage: 'Uploading', progress: 10, message: 'Uploading files...' });
+      setProcessingStatus({
+        stage: 'Uploading',
+        progress: 5,
+        message: 'Uploading and starting pipeline...',
+      });
 
-      const formData = new FormData();
-      formData.append('questionPaper', questionPaper);
-      formData.append('answerSheet', answerSheet);
+      const processed = await processFilesWithStream(
+        questionPaper,
+        answerSheet,
+        setProcessingStatus
+      );
 
-      const uploadResponse = await fetch('/api/upload', { method: 'POST', body: formData });
-      if (!uploadResponse.ok) throw new Error('Upload failed');
-
-      const { sessionId: sid } = await uploadResponse.json();
-      setSessionId(sid);
-
-      setProcessingStatus({ stage: 'Processing', progress: 20, message: 'Extracting questions...' });
-
-      const eventSource = new EventSource(`/api/process?sessionId=${sid}`);
-
-      eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-
-        if (data.stage === 'complete') {
-          eventSource.close();
-          fetch(`/api/results?sessionId=${sid}`)
-            .then((res) => res.json())
-            .then((d) => {
-              setResults({
-                questions: d.questions ?? [],
-                answers: d.answers ?? [],
-                mappings: d.mappings ?? [],
-                answerSheetImages: d.answerSheetImages?.length
-                  ? d.answerSheetImages
-                  : d.answerSheetImage
-                  ? [d.answerSheetImage]
-                  : [],
-              });
-              setState('results');
-            })
-            .catch(() => setState('upload'));
-        } else if (data.stage === 'error') {
-          eventSource.close();
-          alert(`Error: ${data.message || 'Processing failed'}`);
-          setState('upload');
-        } else {
-          setProcessingStatus({ stage: data.stage, progress: data.progress, message: data.message });
-        }
-      };
-
-      eventSource.onerror = () => {
-        eventSource.close();
-        alert('Connection error. Please try again.');
-        setState('upload');
-      };
+      setResults(processed);
+      setState('results');
     } catch (error) {
       console.error('Processing failed:', error);
-      alert('Failed to process files. Please try again.');
+      alert(`Failed to process files: ${(error as Error).message}`);
       setState('upload');
     }
   };
@@ -116,7 +146,6 @@ export default function HomePage() {
 
           {state === 'results' && results && (
             <ResultsScreen
-              sessionId={sessionId!}
               questions={results.questions}
               answers={results.answers}
               mappings={results.mappings}

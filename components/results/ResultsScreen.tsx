@@ -31,7 +31,6 @@ interface GradingResult {
 }
 
 interface ResultsScreenProps {
-  sessionId: string;
   questions?: Question[];
   answers?: Answer[];
   mappings?: Mapping[];
@@ -48,7 +47,6 @@ const Q_COLORS = [
 ];
 
 export function ResultsScreen({
-  sessionId,
   questions = [],
   answers = [],
   mappings = [],
@@ -91,12 +89,33 @@ export function ResultsScreen({
 
   const gradeOne = async (question: Question): Promise<void> => {
     if (gradingResults[question.id] || gradingLoading.has(question.id)) return;
+
+    const mapping = mappings.find((m) => m.questionId === question.id);
+    const answer = mapping ? answers.find((a) => a.id === mapping.answerId) : undefined;
+
+    if (!answer) return;
+
     setGradingLoading((prev) => new Set(prev).add(question.id));
     try {
       const res = await fetch('/api/grade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, questionId: question.id }),
+        body: JSON.stringify({
+          question: {
+            id: question.id,
+            number: question.number,
+            text: question.text,
+            marks: question.marks,
+            page: 1,
+          },
+          answer: {
+            id: answer.id,
+            questionNumber: answer.questionNumber,
+            transcribedText: answer.transcribedText,
+            boundingBox: answer.boundingBox,
+            page: answer.page,
+          },
+        }),
       });
       const data = await res.json();
       if (data.success && data.result) {

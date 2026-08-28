@@ -1,151 +1,44 @@
 import { NextRequest } from 'next/server';
 import { sessionStore } from '@/lib/store';
-import { fileToBase64Images } from '@/lib/pdf-utils';
-import { extractQuestions } from '@/lib/extraction';
-import { detectAnswers } from '@/lib/detection';
-import { mapAnswersToQuestions } from '@/lib/mapping';
-import { ERROR_CODES, STAGE_WEIGHTS } from '@/lib/constants';
-import { calculateProgress } from '@/lib/utils';
+import { runProcessingPipeline } from '@/lib/run-pipeline';
+import { parseUploadedFiles } from '@/lib/upload-validation';
+import { generateSessionId } from '@/lib/utils';
 import type { ProcessingResults } from '@/lib/types';
 
 export const runtime = 'nodejs';
-export const maxDuration = 300; // 5 minutes
+export const maxDuration = 300;
 
-export async function GET(request: NextRequest) {
-  const searchParams = request.nextUrl.searchParams;
-  const sessionId = searchParams.get('sessionId');
-
-  if (!sessionId) {
-    return new Response('Missing sessionId', { status: 400 });
-  }
-
-  // Get session
-  const session = sessionStore.getSession(sessionId);
-  if (!session) {
-    return new Response('Invalid session', { status: 404 });
-  }
-
-  if (!session.questionPaper || !session.answerSheet) {
-    return new Response('Files not uploaded', { status: 400 });
-  }
-
-  const questionPaper = session.questionPaper;
-  const answerSheet = session.answerSheet;
-
-  // Setup SSE
+function createSseStream(
+  run: (
+    send: (data: Record<string, unknown>) => void
+  ) => Promise<ProcessingResults>
+): Response {
   const encoder = new TextEncoder();
+
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (data: any) => {
+      const send = (data: Record<string, unknown>) => {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
       };
 
       try {
-        // Stage 1: Validating
-        sessionStore.updateStatus(sessionId, 'validating');
-        send({
-          stage: 'validating',
-          progress: calculateProgress('validating', 100, STAGE_WEIGHTS),
-          message: 'Validating files...',
-        });
-        await new Promise((r) => setTimeout(r, 500));
-
-        // Stage 2: Converting
-        sessionStore.updateStatus(sessionId, 'converting');
-        send({
-          stage: 'converting',
-          progress: calculateProgress('converting', 50, STAGE_WEIGHTS),
-          message: 'Converting files to images...',
-        });
-
-        const questionImages = await fileToBase64Images(
-          questionPaper.buffer,
-          questionPaper.type
-        );
-
-        send({
-          stage: 'converting',
-          progress: calculateProgress('converting', 100, STAGE_WEIGHTS),
-          message: 'Conversion complete',
-        });
-
-        const answerImages = await fileToBase64Images(
-          answerSheet.buffer,
-          answerSheet.type
-        );
-
-        // Stage 3: Extracting Questions
-        sessionStore.updateStatus(sessionId, 'extracting');
-        send({
-          stage: 'extracting',
-          progress: calculateProgress('extracting', 30, STAGE_WEIGHTS),
-          message: 'Extracting questions from paper...',
-        });
-
-        const questions = await extractQuestions(questionImages);
-
-        send({
-          stage: 'extracting',
-          progress: calculateProgress('extracting', 100, STAGE_WEIGHTS),
-          message: `Extracted ${questions.length} questions`,
-        });
-
-        // Stage 4: Detecting Answers
-        sessionStore.updateStatus(sessionId, 'detecting');
-        send({
-          stage: 'detecting',
-          progress: calculateProgress('detecting', 20, STAGE_WEIGHTS),
-          message: 'Detecting answer regions...',
-        });
-
-        const answers = await detectAnswers(answerImages);
-
-        send({
-          stage: 'detecting',
-          progress: calculateProgress('detecting', 100, STAGE_WEIGHTS),
-          message: `Detected ${answers.length} answer regions`,
-        });
-
-        // Stage 5: Mapping
-        sessionStore.updateStatus(sessionId, 'mapping');
-        send({
-          stage: 'mapping',
-          progress: calculateProgress('mapping', 50, STAGE_WEIGHTS),
-          message: 'Mapping answers to questions...',
-        });
-
-        const mappings = mapAnswersToQuestions(questions, answers);
-
-        send({
-          stage: 'mapping',
-          progress: calculateProgress('mapping', 100, STAGE_WEIGHTS),
-          message: `Mapped ${mappings.length} pairs`,
-        });
-
-        // Stage 6: Complete
-        const results: ProcessingResults = {
-          sessionId,
-          questions,
-          answers,
-          mappings,
-          questionPaperImages: questionImages,
-          answerSheetImages: answerImages,
-          completedAt: new Date(),
-        };
-
-        sessionStore.setResults(sessionId, results);
+        const results = await run(send);
 
         send({
           stage: 'complete',
           progress: 100,
           message: 'Processing complete!',
+          results: {
+            questions: results.questions,
+            answers: results.answers,
+            mappings: results.mappings,
+            answerSheetImages: results.answerSheetImages,
+          },
         });
 
         controller.close();
       } catch (error) {
         console.error('Processing error:', error);
-
-        sessionStore.updateStatus(sessionId, 'error');
 
         send({
           stage: 'error',
@@ -165,5 +58,61 @@ export async function GET(request: NextRequest) {
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     },
+  });
+}
+
+/**
+ * POST /api/process — upload + process in one request (works on Vercel serverless)
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const formData = await request.formData();
+    const { questionPaper, answerSheet } = await parseUploadedFiles(formData);
+    const sessionId = generateSessionId();
+
+    return createSseStream(async (send) => {
+      return runProcessingPipeline(questionPaper, answerSheet, sessionId, send);
+    });
+  } catch (error) {
+    return new Response((error as Error).message, { status: 400 });
+  }
+}
+
+/**
+ * GET /api/process?sessionId= — legacy path for local dev (in-memory session)
+ */
+export async function GET(request: NextRequest) {
+  const sessionId = request.nextUrl.searchParams.get('sessionId');
+
+  if (!sessionId) {
+    return new Response('Missing sessionId', { status: 400 });
+  }
+
+  const session = sessionStore.getSession(sessionId);
+  if (!session) {
+    return new Response(
+      'Session not found. On Vercel, use POST /api/process with files in one request.',
+      { status: 404 }
+    );
+  }
+
+  if (!session.questionPaper || !session.answerSheet) {
+    return new Response('Files not uploaded', { status: 400 });
+  }
+
+  const questionPaper = session.questionPaper;
+  const answerSheet = session.answerSheet;
+
+  sessionStore.updateStatus(sessionId, 'validating');
+
+  return createSseStream(async (send) => {
+    const results = await runProcessingPipeline(
+      questionPaper,
+      answerSheet,
+      sessionId,
+      send
+    );
+    sessionStore.setResults(sessionId, results);
+    return results;
   });
 }
