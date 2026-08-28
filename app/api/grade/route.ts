@@ -6,6 +6,7 @@ import { ERROR_CODES, HTTP_STATUS } from '@/lib/constants';
 import type { DetectedAnswer, ExtractedQuestion } from '@/lib/types';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 /**

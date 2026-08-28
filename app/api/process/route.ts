@@ -6,6 +6,7 @@ import { generateSessionId } from '@/lib/utils';
 import type { ProcessingResults } from '@/lib/types';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
 function createSseStream(

@@ -3,6 +3,7 @@ import { sessionStore } from '@/lib/store';
 import { ERROR_CODES, HTTP_STATUS } from '@/lib/constants';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
   try {

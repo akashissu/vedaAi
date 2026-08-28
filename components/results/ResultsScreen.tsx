@@ -377,6 +377,7 @@ export function ResultsScreen({
               className="relative shadow-xl rounded-lg overflow-hidden bg-white"
               style={{ width: `${zoom}%`, maxWidth: '900px', minWidth: '280px' }}
             >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={`data:image/png;base64,${answerSheetImages[currentPage - 1]}`}
                 alt={`Answer Sheet Page ${currentPage}`}

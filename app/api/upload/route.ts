@@ -5,6 +5,7 @@ import { getFileExtension } from '@/lib/utils';
 import { resolveMimeType, validatePdf, validateImage } from '@/lib/pdf-utils';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 function isAllowedExtension(ext: string): boolean {
