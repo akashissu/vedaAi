@@ -14,6 +14,16 @@ const nextConfig = {
       'pdfjs-dist/legacy/build/pdf.mjs',
       'sharp',
     ],
+    outputFileTracingIncludes: {
+      '/api/process': [
+        './node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs',
+        './node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs',
+      ],
+      '/api/upload': [
+        './node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs',
+        './node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs',
+      ],
+    },
     serverActions: {
       bodySizeLimit: '20mb',
     },

@@ -1,7 +1,5 @@
 // PDF Processing Utilities
 
-import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import sharp from 'sharp';
 import { PDFDocument } from 'pdf-lib';
 import { PDF_CONFIG } from './constants';
@@ -14,14 +12,11 @@ async function getPdfjsLib() {
   return pdfjsLib;
 }
 
-async function configurePdfWorker(): Promise<void> {
+/** Disable worker on server — required for Vercel/serverless (no worker file in bundle) */
+async function ensureServerPdfConfig(): Promise<void> {
   if (pdfWorkerConfigured) return;
-
   const pdfjsLib = await getPdfjsLib();
-  pdfjsLib.GlobalWorkerOptions.workerSrc = pathToFileURL(
-    path.join(process.cwd(), 'node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs')
-  ).toString();
-
+  pdfjsLib.GlobalWorkerOptions.workerSrc = '';
   pdfWorkerConfigured = true;
 }
 
@@ -29,16 +24,21 @@ async function configurePdfWorker(): Promise<void> {
  * Convert PDF buffer to array of PNG images (Base64)
  */
 export async function pdfToImages(pdfBuffer: Buffer): Promise<string[]> {
-  await configurePdfWorker();
+  await ensureServerPdfConfig();
 
   const { createCanvas } = await import(/* webpackIgnore: true */ '@napi-rs/canvas');
   const pdfjsLib = await getPdfjsLib();
 
-  const pdf = await pdfjsLib.getDocument({
+  const docParams = {
     data: new Uint8Array(pdfBuffer),
     useSystemFonts: true,
     disableFontFace: true,
-  }).promise;
+    disableWorker: true,
+  };
+
+  const pdf = await pdfjsLib.getDocument(
+    docParams as Parameters<typeof pdfjsLib.getDocument>[0]
+  ).promise;
 
   const pageCount = pdf.numPages;
   console.log(`PDF has ${pageCount} pages`);
