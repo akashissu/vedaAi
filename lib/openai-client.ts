@@ -165,5 +165,15 @@ class OpenAIClient {
   }
 }
 
-// Export singleton instance
-export const openaiClient = OpenAIClient.getInstance();
+// Lazy proxy — instance is created only on first actual method call at runtime,
+// not at module load time (which would crash Vercel's build when env vars aren't present).
+export const openaiClient = new Proxy({} as OpenAIClient, {
+  get(_target, prop: string) {
+    const instance = OpenAIClient.getInstance();
+    const value = (instance as unknown as Record<string, unknown>)[prop];
+    if (typeof value === 'function') {
+      return (value as Function).bind(instance);
+    }
+    return value;
+  },
+});
